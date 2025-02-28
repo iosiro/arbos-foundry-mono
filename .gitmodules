@@ -1,0 +1,19 @@
+[submodule "foundry"]
+	path = foundry
+	url = https://github.com/iosiro/arbos-foundry.git
+	branch = v54-arbos
+
+[submodule "revm"]
+	path = revm
+	url = https://github.com/iosiro/arbos-revm.git
+	branch = arbos-revm-v54
+
+[submodule "revm-tests"]
+	path = revm-tests
+	url = https://github.com/iosiro/arbos-revm-tests.git
+	branch = master
+
+[submodule "nitro"]
+	path = nitro
+	url = https://github.com/bernard-wagner/nitro.git
+	branch = dev
