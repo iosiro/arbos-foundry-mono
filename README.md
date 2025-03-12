@@ -29,5 +29,5 @@ cd nitro && make
 Integrations tests are developed in a separate repository to minimize the `diff` size of revm. 
 
 ```bash
-cd revm-tests && ./build-tests.sh && cargo test
+cd revm-tests && cargo test
 ```
