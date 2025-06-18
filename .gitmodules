@@ -1,0 +1,12 @@
+[submodule "nitro"]
+	path = nitro
+	url = git@github.com:OffchainLabs/nitro.git
+	branch = master
+[submodule "arbos-foundry"]
+	path = arbos-foundry
+	url = git@github.com:iosiro/arbos-foundry.git
+	branch = master
+[submodule "arbos-revm"]
+	path = arbos-revm
+	url = git@github.com:iosiro/arbos-revm.git
+	branch = master
