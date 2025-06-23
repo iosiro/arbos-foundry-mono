@@ -174,3 +174,82 @@ jobs:
           name: arbos-forge-macos-latest
           path: |
             arbos-foundry/target/release/arbos-forge
+
+  foundry-windows-latest:
+    name: Build Foundry components on Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install rust stable
+        id: install-rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.87.0'
+          targets: 'wasm32-wasip1, wasm32-unknown-unknown'
+          components: 'llvm-tools-preview, rustfmt, clippy'
+
+      - name: Get short hash of nitro
+        id: nitro-submodule-hash
+        shell: pwsh
+        run: |
+          $hash = git rev-parse --short HEAD:nitro
+          "hash=$hash" >> $env:GITHUB_OUTPUT
+
+      - name: Restore Cache Rust intermediate build products
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~\.cargo\bin\
+            ~\.cargo\registry\index\
+            ~\.cargo\registry\cache\
+            ~\.cargo\git\db\
+            nitro\arbitrator\target\
+            nitro\arbitrator\wasm-libraries\target\
+          key: windows-latest-cargo-${{ steps.rust-version.outputs.version }}-full-${{ hashFiles('nitro/arbitrator/Cargo.lock') }}
+          restore-keys: |
+            windows-latest-cargo-${{ steps.rust-version.outputs.version }}-full-
+            windows-latest-cargo-${{ steps.rust-version.outputs.version }}-
+
+      - name: Restore Cache cbrotli
+        uses: actions/cache/restore@v4
+        id: windows-latest-cache-cbrotli
+        with:
+          path: |
+            nitro\target\include\brotli\
+            nitro\target\lib\libbrotlicommon-static.a
+            nitro\target\lib\libbrotlienc-static.a
+            nitro\target\lib\libbrotlidec-static.a
+          key: windows-latest-brotli-${{ steps.nitro-submodule-hash.outputs.hash }}
+
+      - name: Restore Cache cbrotli-wasm
+        uses: actions/cache/restore@v4
+        id: windows-latest-cache-cbrotli-wasm
+        with:
+          path: |
+            nitro\target\lib-wasm\
+          key: ubuntu-latest-brotli-wasm-${{ steps.nitro-submodule-hash.outputs.hash }}
+
+      - name: Cache wasm libraries
+        uses: actions/cache/restore@v4
+        id: cache-wasm-libraries
+        with:
+          path: |
+            nitro\target\machines\latest\forward_stub.wasm
+          key: nitro-wasm-libs-${{ steps.nitro-submodule-hash.outputs.hash }}
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cd arbos-foundry
+          cargo build --release --package forge
+
+      - name: Archive Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arbos-forge-windows-latest
+          path: |
+            arbos-foundry\target\release\arbos-forge.exe            

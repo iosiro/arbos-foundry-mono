@@ -47,14 +47,6 @@ jobs:
           cache: 'yarn'
           cache-dependency-path: '**/yarn.lock'
 
-      - name: Install rust nightly
-        uses: dtolnay/rust-toolchain@nightly
-        id: install-rust-nightly
-        with:
-          toolchain: 'nightly-2025-02-14'
-          targets: 'wasm32-wasip1, wasm32-unknown-unknown'
-          components: 'rust-src, rustfmt, clippy'
-
       - name: Install rust stable
         id: install-rust
         uses: dtolnay/rust-toolchain@stable
@@ -189,14 +181,6 @@ jobs:
           cache: 'yarn'
           cache-dependency-path: '**/yarn.lock'
 
-      - name: Install rust nightly
-        uses: dtolnay/rust-toolchain@nightly
-        id: install-rust-nightly
-        with:
-          toolchain: 'nightly-2025-02-14'
-          targets: 'wasm32-wasip1, wasm32-unknown-unknown'
-          components: 'rust-src, rustfmt, clippy'
-
       - name: Install rust stable
         id: install-rust
         uses: dtolnay/rust-toolchain@stable
@@ -266,3 +250,110 @@ jobs:
             nitro/target/lib/libbrotlienc-static.a
             nitro/target/lib/libbrotlidec-static.a
           key: macos-latest-brotli-${{ steps.nitro-submodule-hash.outputs.hash }}
+
+  nitro-windows-latest:
+    name: Build Nitro components on Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Windows dependencies
+        run: |
+          choco install -y cmake llvm pkgconfig git
+          # Manually set up libusb if needed or include a script to handle it
+
+      - name: Add LLVM to PATH
+        run: echo "$Env:ProgramFiles\LLVM\bin" | Out-File -Append -FilePath $env:GITHUB_PATH
+
+      - name: Install go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.23.x
+
+      - name: Setup nodejs
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'yarn'
+          cache-dependency-path: '**/yarn.lock'
+
+      - name: Install rust stable
+        id: install-rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.87.0'
+          targets: 'wasm32-wasip1, wasm32-unknown-unknown'
+          components: 'llvm-tools-preview, rustfmt, clippy'
+
+      - name: Set STYLUS_NIGHTLY_VER environment variable
+        shell: pwsh
+        run: |
+          $version = rustup toolchain list | Select-String "^nightly" | Select-Object -First 1
+          "STYLUS_NIGHTLY_VER=+$($version -replace '\s.*','')" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: Get Rust version
+        id: rust-version
+        shell: pwsh
+        run: |
+          $ver = rustc --version | ForEach-Object { ($_ -split ' ')[1] }
+          "version=$ver" >> $env:GITHUB_OUTPUT
+
+      - name: Cache Rust intermediate build products
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\.cargo\bin\
+            ~\.cargo\registry\index\
+            ~\.cargo\registry\cache\
+            ~\.cargo\git\db\
+            nitro\arbitrator\target\
+            nitro\arbitrator\wasm-libraries\target\
+          key: windows-latest-cargo-${{ steps.rust-version.outputs.version }}-full-${{ hashFiles('nitro/arbitrator/Cargo.lock') }}
+          restore-keys: |
+            windows-latest-cargo-${{ steps.rust-version.outputs.version }}-full-
+            windows-latest-cargo-${{ steps.rust-version.outputs.version }}-
+
+      - name: Cache wabt build
+        id: cache-wabt
+        uses: actions/cache@v4
+        with:
+          path: C:\Users\runneradmin\wabt-prefix
+          key: ${{ runner.os }}-wabt-${{ env.WABT_VERSION }}
+
+      - name: Install latest wabt
+        if: steps.cache-wabt.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $tempDir = New-TemporaryFile | Split-Path
+          Set-Location $tempDir
+          git clone --recursive -b "$env:WABT_VERSION" https://github.com/WebAssembly/wabt .
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX="$env:USERPROFILE\wabt-prefix"
+          cmake --build . --config Release --target INSTALL
+
+      - name: Get short hash of nitro
+        id: nitro-submodule-hash
+        shell: pwsh
+        run: |
+          $hash = git rev-parse --short HEAD:nitro
+          "hash=$hash" >> $env:GITHUB_OUTPUT
+
+      - name: Build cbrotli-local
+        if: steps.macos-latest-cache-cbrotli.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: cd nitro; ./scripts/build-brotli.sh -l
+
+      - name: Cache cbrotli
+        uses: actions/cache@v4
+        id: macos-latest-cache-cbrotli
+        with:
+          path: |
+            nitro\target\include\brotli\
+            nitro\target\lib\libbrotlicommon-static.a
+            nitro\target\lib\libbrotlienc-static.a
+            nitro\target\lib\libbrotlidec-static.a
+          key: windows-latest-brotli-${{ steps.nitro-submodule-hash.outputs.hash }}          
