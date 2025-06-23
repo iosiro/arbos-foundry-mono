@@ -1,0 +1,161 @@
+name: Nitro CI
+run-name:  Nitro CI triggered from @${{ github.actor }} of ${{ github.head_ref }}
+
+on:
+  merge_group:
+  pull_request:
+    paths:
+      - '.github/workflows/nitro-ci.yml'
+      - nitro
+  push:
+    branches:
+      - master
+    path:
+      - '.github/workflows/nitro-ci.yml'
+      - nitro
+
+env:
+  RUST_BACKTRACE: 1
+# RUSTFLAGS: -Dwarnings            # TODO: re-enable after wasmer upgrade
+  WABT_VERSION: 1.0.32
+
+jobs:
+  nitro:
+    name: Build Nitro components
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Ubuntu dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            build-essential cmake lld-14 libudev-dev
+          sudo ln -s /usr/bin/wasm-ld-14 /usr/local/bin/wasm-ld
+
+      - name: Install go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.23.x
+
+      - name: Setup nodejs
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'yarn'
+          cache-dependency-path: '**/yarn.lock'
+
+      - name: Install rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        id: install-rust-nightly
+        with:
+          toolchain: 'nightly-2025-02-14'
+          targets: 'wasm32-wasip1, wasm32-unknown-unknown'
+          components: 'rust-src, rustfmt, clippy'
+
+      - name: Install rust stable
+        id: install-rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.84.1'
+          targets: 'wasm32-wasip1, wasm32-unknown-unknown'
+          components: 'llvm-tools-preview, rustfmt, clippy'
+
+      - name: Set STYLUS_NIGHTLY_VER environment variable
+        run: echo "STYLUS_NIGHTLY_VER=+$(rustup toolchain list | grep '^nightly' | head -n1 | cut -d' ' -f1)" >> "$GITHUB_ENV"
+
+      - name: Get Rust version
+        id: rust-version
+        run: echo "version=$(rustc --version | cut -d' ' -f2)" >> $GITHUB_OUTPUT
+
+      - name: Cache Rust intermediate build products
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            nitro/arbitrator/target/
+            nitro/arbitrator/wasm-libraries/target/
+          key: ubuntu-latest-cargo-${{ steps.rust-version.outputs.version }}-full-${{ hashFiles('nitro/arbitrator/Cargo.lock') }}
+          restore-keys: |
+            ubuntu-latest-cargo-${{ steps.rust-version.outputs.version }}-full-
+            ubuntu-latest-cargo-${{ steps.rust-version.outputs.version }}-
+
+      - name: Cache wabt build
+        id: cache-wabt
+        uses: actions/cache@v4
+        with:
+          path: ~/wabt-prefix
+          key: ${{ runner.os }}-wabt-${{ env.WABT_VERSION }}
+
+      - name: Install latest wabt
+        if: steps.cache-wabt.outputs.cache-hit != 'true'
+        run: |
+          cd "$(mktemp -d)"
+          git clone --recursive -b "$WABT_VERSION" https://github.com/WebAssembly/wabt .
+          mkdir build
+          cd build
+          mkdir -p ~/wabt-prefix
+          cmake .. -DCMAKE_INSTALL_PREFIX="$HOME/wabt-prefix"
+          make -j
+          make install
+
+      # - name: Install Foundry
+      #   uses: foundry-rs/foundry-toolchain@v1
+      #   with:
+      #     cache: false
+
+      - name: Get short hash of nitro
+        id: nitro-submodule-hash
+        run: |
+          HASH=$(git rev-parse --short HEAD:nitro)
+          echo "hash=$HASH" >> $GITHUB_OUTPUT        
+
+      - name: Cache cbrotli
+        uses: actions/cache@v4
+        id: cache-cbrotli
+        with:
+          path: |
+            nitro/target/include/brotli/
+            nitro/target/lib-wasm/
+            nitro/target/lib/libbrotlicommon-static.a
+            nitro/target/lib/libbrotlienc-static.a
+            nitro/target/lib/libbrotlidec-static.a
+          key: ubuntu-latest-brotli-${{ steps.nitro-submodule-hash.outputs.hash }}
+
+      - name: Build cbrotli-local
+        if: steps.cache-cbrotli.outputs.cache-hit != 'true'
+        run: cd nitro && ./scripts/build-brotli.sh -l
+
+      - name: Setup emsdk
+        if: steps.cache-cbrotli.outputs.cache-hit != 'true'
+        uses: mymindstorm/setup-emsdk@v12
+        with:
+          # Make sure to set a version number!
+          version: 3.1.6
+          # This is the name of the cache folder.
+          # The cache folder will be placed in the build directory,
+          #  so make sure it doesn't conflict with anything!
+          no-cache: true
+
+      - name: Build cbrotli-wasm
+        if: steps.cache-cbrotli.outputs.cache-hit != 'true'
+        run: cd nitro && ./scripts/build-brotli.sh -w
+
+      - name: Add wabt to path
+        run: echo "$HOME/wabt-prefix/bin" >> "$GITHUB_PATH"
+
+      - name: Make arbitrator libraries
+        run: cd nitro && make build-wasm-libs
+
+      - name: Cache wasm libraries
+        uses: actions/cache@v4
+        id: cache-wasm-libraries
+        with:
+          path: |
+            nitro/target/machines/latest/forward_stub.wasm
+          key: nitro-wasm-libs-${{ steps.nitro-submodule-hash.outputs.hash }}    
