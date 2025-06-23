@@ -122,11 +122,9 @@ jobs:
           key: ubuntu-latest-brotli-wasm-${{ steps.nitro-submodule-hash.outputs.hash }}    
 
       - name: Build cbrotli-local
-        if: steps.cache-cbrotli.outputs.cache-hit != 'true'
         run: cd nitro && ./scripts/build-brotli.sh -l
 
       - name: Setup emsdk
-        if: steps.cache-cbrotli.outputs.cache-hit != 'true'
         uses: mymindstorm/setup-emsdk@v12
         with:
           # Make sure to set a version number!
@@ -137,7 +135,6 @@ jobs:
           no-cache: true
 
       - name: Build cbrotli-wasm
-        if: steps.cache-cbrotli.outputs.cache-hit != 'true'
         run: cd nitro && ./scripts/build-brotli.sh -w
 
       - name: Add wabt to path
@@ -237,7 +234,6 @@ jobs:
           echo "hash=$HASH" >> $GITHUB_OUTPUT    
 
       - name: Build cbrotli-local
-        if: steps.cache-cbrotli.outputs.cache-hit != 'true'
         run: cd nitro && ./scripts/build-brotli.sh -l              
 
       - name: Cache cbrotli
@@ -255,6 +251,10 @@ jobs:
     name: Build Nitro components on Windows
     runs-on: windows-latest
     steps:
+      - name: Set git core.longpaths flag
+        run: |
+            git config --system core.longpaths true   
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -262,8 +262,7 @@ jobs:
 
       - name: Install Windows dependencies
         run: |
-          choco install -y cmake llvm pkgconfig git
-          # Manually set up libusb if needed or include a script to handle it
+          choco install -y cmake llvm pkgconfiglite git
 
       - name: Add LLVM to PATH
         run: echo "$Env:ProgramFiles\LLVM\bin" | Out-File -Append -FilePath $env:GITHUB_PATH
@@ -273,12 +272,6 @@ jobs:
         with:
           go-version: 1.23.x
 
-      - name: Setup nodejs
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'yarn'
-          cache-dependency-path: '**/yarn.lock'
 
       - name: Install rust stable
         id: install-rust
@@ -316,24 +309,19 @@ jobs:
             windows-latest-cargo-${{ steps.rust-version.outputs.version }}-full-
             windows-latest-cargo-${{ steps.rust-version.outputs.version }}-
 
-      - name: Cache wabt build
-        id: cache-wabt
-        uses: actions/cache@v4
-        with:
-          path: C:\Users\runneradmin\wabt-prefix
-          key: ${{ runner.os }}-wabt-${{ env.WABT_VERSION }}
-
-      - name: Install latest wabt
-        if: steps.cache-wabt.outputs.cache-hit != 'true'
-        shell: pwsh
+      - name: Download WABT release
         run: |
-          $tempDir = New-TemporaryFile | Split-Path
-          Set-Location $tempDir
-          git clone --recursive -b "$env:WABT_VERSION" https://github.com/WebAssembly/wabt .
-          mkdir build
-          cd build
-          cmake .. -DCMAKE_INSTALL_PREFIX="$env:USERPROFILE\wabt-prefix"
-          cmake --build . --config Release --target INSTALL
+          $wabtVersion = "1.0.33"
+          $wabtUrl = "https://github.com/WebAssembly/wabt/releases/download/$wabtVersion/wabt-$wabtVersion-windows.tar.gz"
+          Invoke-WebRequest -Uri $wabtUrl -OutFile "wabt.tar.gz"
+
+      - name: Extract WABT
+        run: |
+          mkdir wabt
+          tar -xvzf wabt.tar.gz -C wabt --strip-components=1
+
+      - name: Add WABT to PATH
+        run: echo "${{ github.workspace }}\wabt" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8
 
       - name: Get short hash of nitro
         id: nitro-submodule-hash
@@ -343,9 +331,12 @@ jobs:
           "hash=$hash" >> $env:GITHUB_OUTPUT
 
       - name: Build cbrotli-local
-        if: steps.macos-latest-cache-cbrotli.outputs.cache-hit != 'true'
         shell: pwsh
         run: cd nitro; ./scripts/build-brotli.sh -l
+
+      - name: List files in nitro\target\lib
+        run: |
+          dir nitro\target\lib        
 
       - name: Cache cbrotli
         uses: actions/cache@v4
@@ -353,7 +344,5 @@ jobs:
         with:
           path: |
             nitro\target\include\brotli\
-            nitro\target\lib\libbrotlicommon-static.a
-            nitro\target\lib\libbrotlienc-static.a
-            nitro\target\lib\libbrotlidec-static.a
+            nitro\target\lib
           key: windows-latest-brotli-${{ steps.nitro-submodule-hash.outputs.hash }}          
