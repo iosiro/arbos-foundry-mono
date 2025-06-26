@@ -3,9 +3,15 @@
 * LLVM (brew install llvm)
 * LLD (brew install lld)
 * Node 18
+* Docker
+* Stylus develop prerequisites - https://docs.arbitrum.io/stylus/quickstart
 
 
 # Building
+
+```
+git clone --recurse 
+```
 
 ```
 cd nitro &&  make wasm-ci-build
