@@ -6,256 +6,143 @@ on:
   pull_request:
     paths:
       - '.github/workflows/foundry-ci.yml'
-      - arbos-foundry
-      - arbos-revm
+      - 'arbos-foundry/**'
+      - 'arbos-revm/**'
   push:
     branches:
       - master
+    paths:
+      - '.github/workflows/foundry-ci.yml'
+      - 'arbos-foundry/**'
+      - 'arbos-revm/**'
   workflow_run:    
     workflows: ["Nitro CI"]
     types:
-      - completed  
+      - completed
 
 env:
   RUST_BACKTRACE: 1
-# RUSTFLAGS: -Dwarnings            # TODO: re-enable after wasmer upgrade
-  WABT_VERSION: 1.0.32
+  RUST_VERSION: '1.87.0'
 
 jobs:
-  foundry-ubuntu-latest:
-    name: Build Foundry components
+  changes:
+    name: Detect changes
     runs-on: ubuntu-latest
+    outputs:
+      foundry: ${{ steps.filter.outputs.foundry }}
+      nitro-completed: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        if: github.event_name != 'workflow_run'
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name != 'workflow_run'
         with:
-          submodules: recursive 
+          filters: |
+            foundry:
+              - 'arbos-foundry/**'
+              - 'arbos-revm/**'
+              - '.github/workflows/foundry-ci.yml'
 
-      - name: Install rust stable
-        id: install-rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: '1.87.0'
-          targets: 'wasm32-wasip1, wasm32-unknown-unknown'
-          components: 'llvm-tools-preview, rustfmt, clippy'
-
-      - name: Get short hash of nitro
-        id: nitro-submodule-hash
-        run: |
-          HASH=$(git rev-parse --short HEAD:nitro)
-          echo "hash=$HASH" >> $GITHUB_OUTPUT              
-
-      - name: Restore Cache Rust intermediate build products
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            nitro/arbitrator/target/
-            nitro/arbitrator/wasm-libraries/target/
-          key: ubuntu-latest-cargo-${{ steps.rust-version.outputs.version }}-full-${{ hashFiles('nitro/arbitrator/Cargo.lock') }}
-          restore-keys: |
-            ubuntu-latest-cargo-${{ steps.rust-version.outputs.version }}-full-
-            ubuntu-latest-cargo-${{ steps.rust-version.outputs.version }}-
-
-      - name: Restore Cache cbrotli
-        uses: actions/cache/restore@v4
-        id: ubuntu-latest-cache-cbrotli
-        with:
-          path: |
-            nitro/target/include/brotli/
-            nitro/target/lib-wasm/
-            nitro/target/lib/libbrotlicommon-static.a
-            nitro/target/lib/libbrotlienc-static.a
-            nitro/target/lib/libbrotlidec-static.a
-          key: ubuntu-latest-brotli-${{ steps.nitro-submodule-hash.outputs.hash }}
-
-      - name: Restore Cache cbrotli-wasm
-        uses: actions/cache/restore@v4
-        id: ubuntu-latest-cache-cbrotli-wasm
-        with:
-          path: |
-            nitro/target/lib-wasm/
-          key: ubuntu-latest-brotli-wasm-${{ steps.nitro-submodule-hash.outputs.hash }}              
-
-      - name: Cache wasm libraries
-        uses: actions/cache/restore@v4
-        id: cache-wasm-libraries
-        with:
-          path: |
-            nitro/target/machines/latest/forward_stub.wasm
-          key: nitro-wasm-libs-${{ steps.nitro-submodule-hash.outputs.hash }}  
-
-      - name: build
-        run: |
-          cd arbos-foundry && cargo build --release --package forge
-
-      - name: archive-ubuntu-latest
-        uses: actions/upload-artifact@v4
-        with:
-          name: arbos-forge-ubuntu-latest
-          path: |
-            arbos-foundry/target/release/arbos-forge
-
-  foundry-macos-latest:
+  foundry-build:
     name: Build Foundry components
-    runs-on: macos-latest
+    needs: changes
+    if: needs.changes.outputs.foundry == 'true' || needs.changes.outputs.nitro-completed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive 
-
-      - name: Install rust stable
-        id: install-rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: '1.87.0'
-          targets: 'wasm32-wasip1, wasm32-unknown-unknown'
-          components: 'llvm-tools-preview, rustfmt, clippy'
-
-      - name: Get short hash of nitro
-        id: nitro-submodule-hash
-        run: |
-          HASH=$(git rev-parse --short HEAD:nitro)
-          echo "hash=$HASH" >> $GITHUB_OUTPUT              
-
-      - name: Restore Cache Rust intermediate build products
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            nitro/arbitrator/target/
-            nitro/arbitrator/wasm-libraries/target/
-          key: macos-latest-cargo-${{ steps.rust-version.outputs.version }}-full-${{ hashFiles('nitro/arbitrator/Cargo.lock') }}
-          restore-keys: |
-            macos-latest-cargo-${{ steps.rust-version.outputs.version }}-full-
-            macos-latest-cargo-${{ steps.rust-version.outputs.version }}-
-
-      - name: Restore Cache cbrotli
-        uses: actions/cache/restore@v4
-        id: macos-latest-cache-cbrotli
-        with:
-          path: |
-            nitro/target/include/brotli/
-            nitro/target/lib/libbrotlicommon-static.a
-            nitro/target/lib/libbrotlienc-static.a
-            nitro/target/lib/libbrotlidec-static.a
-          key: macos-latest-brotli-${{ steps.nitro-submodule-hash.outputs.hash }}    
-
-      - name: Restore Cache cbrotli-wasm
-        uses: actions/cache/restore@v4
-        id: ubuntu-latest-cache-cbrotli-wasm
-        with:
-          path: |
-            nitro/target/lib-wasm/
-          key: ubuntu-latest-brotli-wasm-${{ steps.nitro-submodule-hash.outputs.hash }} 
-
-      - name: Cache wasm libraries
-        uses: actions/cache/restore@v4
-        id: cache-wasm-libraries
-        with:
-          path: |
-            nitro/target/machines/latest/forward_stub.wasm
-          key: nitro-wasm-libs-${{ steps.nitro-submodule-hash.outputs.hash }}  
-
-      - name: build
-        run: |
-          cd arbos-foundry && cargo build --release --package forge
-
-      - name: archive-macos-latest
-        uses: actions/upload-artifact@v4
-        with:
-          name: arbos-forge-macos-latest
-          path: |
-            arbos-foundry/target/release/arbos-forge
-
-  foundry-windows-latest:
-    name: Build Foundry components on Windows
-    runs-on: windows-latest
-    steps:
-      - name: Set git core.longpaths flag
-        run: |
-            git config --system core.longpaths true   
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install rust stable
-        id: install-rust
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: '1.87.0'
-          targets: 'wasm32-wasip1, wasm32-unknown-unknown'
-          components: 'llvm-tools-preview, rustfmt, clippy'
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: 'wasm32-wasip1,wasm32-unknown-unknown'
+          components: 'llvm-tools-preview,rustfmt,clippy'
 
-      - name: Get short hash of nitro
-        id: nitro-submodule-hash
-        shell: pwsh
+      - name: Set environment variables
         run: |
-          $hash = git rev-parse --short HEAD:nitro
-          "hash=$hash" >> $env:GITHUB_OUTPUT
+          echo "RUST_VERSION_HASH=$(rustc --version | sha256sum | cut -d' ' -f1 | head -c 8)" >> "$GITHUB_ENV"
 
-      - name: Restore Cache Rust intermediate build products
-        uses: actions/cache/restore@v4
+      - name: Get nitro submodule hash
+        id: nitro-hash
+        run: |
+          HASH=$(git rev-parse --short HEAD:nitro)
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+
+      - name: Download Nitro artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: nitro-build-${{ matrix.os }}
+          path: ./
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
         with:
           path: |
-            ~\.cargo\bin\
-            ~\.cargo\registry\index\
-            ~\.cargo\registry\cache\
-            ~\.cargo\git\db\
-            nitro\arbitrator\target\
-            nitro\arbitrator\wasm-libraries\target\
-          key: windows-latest-cargo-${{ steps.rust-version.outputs.version }}-full-${{ hashFiles('nitro/arbitrator/Cargo.lock') }}
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            arbos-foundry/target/
+          key: ${{ matrix.os }}-foundry-cargo-${{ env.RUST_VERSION_HASH }}-${{ hashFiles('arbos-foundry/Cargo.lock') }}
           restore-keys: |
-            windows-latest-cargo-${{ steps.rust-version.outputs.version }}-full-
-            windows-latest-cargo-${{ steps.rust-version.outputs.version }}-
+            ${{ matrix.os }}-foundry-cargo-${{ env.RUST_VERSION_HASH }}-
+            ${{ matrix.os }}-foundry-cargo-
 
-      - name: Restore Cache cbrotli
-        uses: actions/cache/restore@v4
-        id: windows-latest-cache-cbrotli
+      - name: Cache Nitro dependencies
+        uses: actions/cache@v4
         with:
           path: |
-            nitro\target\include\brotli\
-            nitro\target\lib
-          key: windows-latest-brotli-${{ steps.nitro-submodule-hash.outputs.hash }}
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            nitro/arbitrator/target/
+            nitro/arbitrator/wasm-libraries/target/
+          key: ${{ matrix.os }}-cargo-${{ env.RUST_VERSION_HASH }}-${{ hashFiles('nitro/arbitrator/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.os }}-cargo-${{ env.RUST_VERSION_HASH }}-
+            ${{ matrix.os }}-cargo-
 
-      - name: List files in nitro\target\lib
-        run: |
-          dir nitro\target\lib
-
-      - name: Restore Cache cbrotli-wasm
-        uses: actions/cache/restore@v4
-        id: windows-latest-cache-cbrotli-wasm
+      - name: Cache brotli libraries
+        uses: actions/cache@v4
         with:
           path: |
-            nitro\target\lib-wasm\
-          key: ubuntu-latest-brotli-wasm-${{ steps.nitro-submodule-hash.outputs.hash }}
+            nitro/target/include/brotli/
+            nitro/target/lib-wasm/
+            nitro/target/lib/libbrotlicommon-static.a
+            nitro/target/lib/libbrotlienc-static.a
+            nitro/target/lib/libbrotlidec-static.a
+          key: ${{ matrix.os }}-brotli-${{ steps.nitro-hash.outputs.hash }}
 
       - name: Cache wasm libraries
-        uses: actions/cache/restore@v4
-        id: cache-wasm-libraries
+        uses: actions/cache@v4
         with:
-          path: |
-            nitro\target\machines\latest\forward_stub.wasm
-          key: nitro-wasm-libs-${{ steps.nitro-submodule-hash.outputs.hash }}
+          path: nitro/target/machines/latest/forward_stub.wasm
+          key: nitro-wasm-libs-${{ steps.nitro-hash.outputs.hash }}
 
-      - name: Build
-        shell: pwsh
+      - name: Build forge
         run: |
           cd arbos-foundry
           cargo build --release --package forge
 
-      - name: Archive Windows artifact
+      - name: Run tests
+        run: |
+          cd arbos-foundry
+          cargo test --release --package forge
+
+      - name: Archive build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: arbos-forge-windows-latest
-          path: |
-            arbos-foundry\target\release\arbos-forge.exe            
+          name: arbos-forge-${{ matrix.os }}
+          path: arbos-foundry/target/release/arbos-forge
+          retention-days: 7
