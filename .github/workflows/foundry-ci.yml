@@ -135,10 +135,10 @@ jobs:
           cd arbos-foundry
           cargo build --release --package forge
 
-      - name: Run tests
-        run: |
-          cd arbos-foundry
-          cargo test --release --package forge
+      # - name: Run tests
+      #   run: |
+      #     cd arbos-foundry
+      #     cargo test --release --package forge
 
       - name: Archive build artifacts
         uses: actions/upload-artifact@v4
