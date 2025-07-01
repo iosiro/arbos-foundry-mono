@@ -1,0 +1,131 @@
+name: Arbos Foundry CI
+run-name: Arbos Foundry CI triggered from @${{ github.actor }} of ${{ github.head_ref }}
+
+on:
+  merge_group:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/foundry-ci.yml'
+      - 'arbos-foundry/**'
+      - 'arbos-revm/**'
+  workflow_run:    
+    workflows: ["Nitro CI"]
+    types:
+      - completed
+
+env:
+  RUST_BACKTRACE: 1
+  RUST_VERSION: '1.87.0'
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      foundry: ${{ steps.filter.outputs.foundry }}
+      nitro-completed: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name != 'workflow_run'
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name != 'workflow_run'
+        with:
+          filters: |
+            foundry:
+              - 'arbos-foundry/**'
+              - 'arbos-revm/**'
+              - '.github/workflows/foundry-ci.yml'
+
+  foundry-build:
+    name: Build Foundry components
+    needs: changes
+    if: needs.changes.outputs.foundry == 'true' || needs.changes.outputs.nitro-completed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: 'wasm32-wasip1,wasm32-unknown-unknown'
+          components: 'llvm-tools-preview,rustfmt,clippy'
+
+      - name: Set environment variables
+        run: |
+          echo "RUST_VERSION_HASH=$(rustc --version | sha256sum | cut -d' ' -f1 | head -c 8)" >> "$GITHUB_ENV"
+
+      - name: Get nitro submodule hash
+        id: nitro-hash
+        run: |
+          HASH=$(git rev-parse --short HEAD:nitro)
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            arbos-foundry/target/
+          key: ${{ matrix.os }}-foundry-cargo-${{ env.RUST_VERSION_HASH }}-${{ hashFiles('arbos-foundry/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.os }}-foundry-cargo-${{ env.RUST_VERSION_HASH }}-
+            ${{ matrix.os }}-foundry-cargo-
+
+      - name: Cache Nitro dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            nitro/arbitrator/target/
+            nitro/arbitrator/wasm-libraries/target/
+          key: ${{ matrix.os }}-cargo-${{ env.RUST_VERSION_HASH }}-${{ hashFiles('nitro/arbitrator/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.os }}-cargo-${{ env.RUST_VERSION_HASH }}-
+            ${{ matrix.os }}-cargo-
+
+      - name: Cache brotli libraries
+        uses: actions/cache@v4
+        with:
+          path: |
+            nitro/target/include/brotli/
+            nitro/target/lib-wasm/
+            nitro/target/lib/libbrotlicommon-static.a
+            nitro/target/lib/libbrotlienc-static.a
+            nitro/target/lib/libbrotlidec-static.a
+          key: ${{ matrix.os }}-brotli-${{ steps.nitro-hash.outputs.hash }}
+
+      - name: Cache wasm libraries
+        uses: actions/cache@v4
+        with:
+          path: nitro/target/machines/latest/forward_stub.wasm
+          key: nitro-wasm-libs-${{ steps.nitro-hash.outputs.hash }}
+
+      - name: Build forge
+        run: |
+          cd arbos-foundry
+          cargo build --release --package forge
+
+      - name: Archive build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: arbos-forge-${{ matrix.os }}
+          path: arbos-foundry/target/release/arbos-forge
+          retention-days: 7
