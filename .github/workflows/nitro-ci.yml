@@ -1,0 +1,188 @@
+name: Nitro CI
+run-name: Nitro CI triggered from @${{ github.actor }} of ${{ github.head_ref }}
+
+on:
+  merge_group:
+  pull_request:
+    paths:
+      - '.github/workflows/nitro-ci.yml'
+      - 'nitro/**'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/nitro-ci.yml'
+      - 'nitro/**'
+
+env:
+  RUST_BACKTRACE: 1
+  WABT_VERSION: 1.0.32
+  RUST_VERSION: '1.87.0'
+  GO_VERSION: '1.23.x'
+  NODE_VERSION: '18'
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      nitro: ${{ steps.filter.outputs.nitro }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            nitro:
+              - 'nitro/**'
+              - '.github/workflows/nitro-ci.yml'
+
+  nitro-build:
+    name: Build Nitro components
+    needs: changes
+    if: needs.changes.outputs.nitro == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            cache-key-prefix: ubuntu-latest
+            deps-install: |
+              sudo apt-get update && sudo apt-get install -y \
+                build-essential cmake lld-14 libudev-dev
+              sudo ln -s /usr/bin/wasm-ld-14 /usr/local/bin/wasm-ld
+          - os: macos-latest
+            cache-key-prefix: macos-latest
+            deps-install: |
+              brew update
+              brew install cmake llvm libusb pkg-config
+              ln -s /opt/homebrew/opt/llvm/bin/wasm-ld /usr/local/bin/wasm-ld || true
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: ${{ matrix.deps-install }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'yarn'
+          cache-dependency-path: '**/yarn.lock'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: 'wasm32-wasip1,wasm32-unknown-unknown'
+          components: 'llvm-tools-preview,rustfmt,clippy'
+
+      - name: Set environment variables
+        run: |
+          echo "STYLUS_NIGHTLY_VER=+$(rustup toolchain list | grep '^nightly' | head -n1 | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          echo "RUST_VERSION_HASH=$(rustc --version | sha256sum | cut -d' ' -f1 | head -c 8)" >> "$GITHUB_ENV"
+
+      - name: Get nitro submodule hash
+        id: nitro-hash
+        run: |
+          HASH=$(git rev-parse --short HEAD:nitro)
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            nitro/arbitrator/target/
+            nitro/arbitrator/wasm-libraries/target/
+          key: ${{ matrix.cache-key-prefix }}-cargo-${{ env.RUST_VERSION_HASH }}-${{ hashFiles('nitro/arbitrator/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.cache-key-prefix }}-cargo-${{ env.RUST_VERSION_HASH }}-
+            ${{ matrix.cache-key-prefix }}-cargo-
+
+      - name: Cache wabt
+        id: cache-wabt
+        uses: actions/cache@v4
+        with:
+          path: ~/wabt-prefix
+          key: ${{ runner.os }}-wabt-${{ env.WABT_VERSION }}
+
+      - name: Build wabt
+        if: steps.cache-wabt.outputs.cache-hit != 'true'
+        run: |
+          cd "$(mktemp -d)"
+          git clone --recursive -b "$WABT_VERSION" https://github.com/WebAssembly/wabt .
+          mkdir build && cd build
+          mkdir -p ~/wabt-prefix
+          cmake .. -DCMAKE_INSTALL_PREFIX="$HOME/wabt-prefix"
+          make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+          make install
+
+      - name: Cache brotli
+        uses: actions/cache@v4
+        with:
+          path: |
+            nitro/target/include/brotli/
+            nitro/target/lib/libbrotlicommon-static.a
+            nitro/target/lib/libbrotlienc-static.a
+            nitro/target/lib/libbrotlidec-static.a
+          key: ${{ matrix.cache-key-prefix }}-brotli-${{ steps.nitro-hash.outputs.hash }}
+
+      - name: Cache brotli-wasm
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/cache@v4
+        with:
+          path: nitro/target/lib-wasm/
+          key: ${{ matrix.cache-key-prefix }}-brotli-wasm-${{ steps.nitro-hash.outputs.hash }}
+
+      - name: Build brotli
+        run: cd nitro && ./scripts/build-brotli.sh -l
+
+      - name: Setup emsdk
+        if: matrix.os == 'ubuntu-latest'
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.6
+          no-cache: true
+
+      - name: Build brotli-wasm
+        if: matrix.os == 'ubuntu-latest'
+        run: cd nitro && ./scripts/build-brotli.sh -w
+
+      - name: Add wabt to PATH
+        run: echo "$HOME/wabt-prefix/bin" >> "$GITHUB_PATH"
+
+      - name: Cache wasm libraries
+        id: cache-wasm-libs
+        uses: actions/cache@v4
+        with:
+          path: nitro/target/machines/latest/forward_stub.wasm
+          key: nitro-wasm-libs-${{ steps.nitro-hash.outputs.hash }}
+
+      - name: Build wasm libraries
+        if: steps.cache-wasm-libs.outputs.cache-hit != 'true'
+        run: cd nitro && make build-wasm-libs
+
+      - name: Archive build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nitro-build-${{ matrix.os }}
+          path: |
+            nitro/target/machines/latest/forward_stub.wasm
+            nitro/target/lib*/
+          retention-days: 1
