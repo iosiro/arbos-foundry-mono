@@ -14,6 +14,8 @@ on:
     workflows: ["Nitro CI"]
     types:
       - completed
+  schedule:
+    - cron: '0 2 * * *'  # Nightly at 02:00 UTC
 
 env:
   RUST_BACKTRACE: 1
@@ -26,6 +28,7 @@ jobs:
     outputs:
       foundry: ${{ steps.filter.outputs.foundry }}
       nitro-completed: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' }}
+      nightly: ${{ github.event_name == 'schedule' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name != 'workflow_run'
@@ -42,7 +45,7 @@ jobs:
   foundry-build:
     name: Build Foundry components
     needs: changes
-    if: needs.changes.outputs.foundry == 'true' || needs.changes.outputs.nitro-completed == 'true'
+    if: needs.changes.outputs.foundry == 'true' || needs.changes.outputs.nitro-completed == 'true' || needs.changes.outputs.nightly == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -129,3 +132,40 @@ jobs:
           name: arbos-forge-${{ matrix.os }}
           path: arbos-foundry/target/release/arbos-forge
           retention-days: 7
+
+  nightly-release:
+    name: Publish Nightly Release
+    needs: foundry-build
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+
+      - name: Download Ubuntu artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: arbos-forge-ubuntu-latest
+          path: ./release-assets
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: arbos-forge-macos-latest
+          path: ./release-assets
+
+      - name: List downloaded files for debug
+        run: ls -lh ./release-assets
+
+      - name: Create Nightly Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly-${{ steps.date.outputs.date }}
+          name: Nightly Release ${{ steps.date.outputs.date }}
+          prerelease: true
+          body: |
+            Automated nightly release for Arbos Foundry.
+
+            Build: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          files: ./release-assets/*
